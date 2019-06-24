@@ -1,1 +1,1 @@
-# MPEA
+# MPEA: Multivariate Pathway Enrichment Analysis
