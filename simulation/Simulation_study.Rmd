@@ -1,0 +1,224 @@
+---
+title: "Simulation Study"
+author: "Ali Shojaee Bakhtiari, Aleksander V. Alekseyenko"
+date: "December 10, 2018"
+output: html_document
+---
+# Library upload
+
+```{r}
+library(energy)
+packageVersion("energy")
+library(ggplot2)
+packageVersion("ggplot2")
+library(parallel)
+```
+
+# Function definition
+
+```{r}
+rotationmatrix <- function(theta, Radian=T){
+  if (Radian==F) theta<-theta/180*pi
+  rotation_marix <- matrix(c(cos(theta),sin(theta),-sin(theta),cos(theta)),byrow = T, nrow = 2)
+  rotation_marix
+}
+
+rotateQ = function(x, n){
+  ROTMAT = matrix(c(sqrt(1-1/n), -sqrt(1/n), 
+                    sqrt(1/n), sqrt(1-1/n)), 
+                  byrow = T, ncol=2) 
+  t(ROTMAT%*%t(x)) 
+}
+
+rotateEqualN = function(x){
+  for(v in (ncol(x):2)){
+    x[,c(1,v)]=rotateQ(x[,c(1,v),drop=F], v)
+    # print(x[,c(1,v)])
+    # Sys.sleep(5)
+  }
+  x
+}
+
+
+ttest_vs_dcor_comparison_admixture <- function( n=40, es=0.6, nrep=1000){
+  require('MASS')
+  require("reshape2")
+  res=c()
+  for(nv in c(seq(from=1, to=20, by=4), 100)){
+    for(r in 1:nrep){
+      data = mvrnorm(n=n, 
+                     mu=c(0, 0), 
+                     Sigma=matrix(c(1, es, es, 1), nrow=2))
+      y=ifelse(data[,1]>=0, 1,0)
+      rd = dist(y)
+      x1 = data[,2]
+      aux <- cbind(x1, replicate(n = nv, rnorm(n)))
+      x=rotateEqualN(aux)
+      min.q = min(p.adjust(apply(x, 2, function(a) cor.test(a, y)$p.value), method="fdr"))
+      dcor.p = dcor.ttest(dist(x), rd, distance = T)$p.value
+      res = rbind(res, c(nv, r, min.q, dcor.p))
+    }
+  }
+  res = data.frame(res)
+  
+  colnames(res) = c("nVariables", "replicate", "min.q", "dcor.p")
+  res2 = melt(res, id=list("nVariables", "replicate"))
+  res3 = dcast(res2, nVariables ~ variable, value.var="value", fun.aggregate = function(x) sum(x<0.05)/nrep)
+}
+
+set.seed(0)
+ttest_vs_dcor_comparison_no_admixture <- function( n=40, es=0.6, nrep=1000){
+  require('MASS')
+  require("reshape2")
+  res=c()
+  for(nv in c(seq(from=1, to=20, by=4), 100)){
+    for(r in 1:nrep){
+      data = mvrnorm(n=n, 
+                     mu=c(0, 0), 
+                     Sigma=matrix(c(1, es, es, 1), nrow=2))
+      y=ifelse(data[,1]>=0, 1,0)
+      rd = dist(y)
+      x1 = data[,2]
+      aux <- cbind(x1, replicate(n = nv, rnorm(n)))
+      x=(aux)
+      min.q = min(p.adjust(apply(x, 2, function(a) cor.test(a, y)$p.value), method="fdr"))
+      dcor.p = dcor.ttest(dist(x), rd, distance = T)$p.value
+      res = rbind(res, c(nv, r, min.q, dcor.p))
+    }
+  }
+  res = data.frame(res)
+  
+  colnames(res) = c("nVariables", "replicate", "min.q", "dcor.p")
+  res2 = melt(res, id=list("nVariables", "replicate"))
+  res3 = dcast(res2, nVariables ~ variable, value.var="value", fun.aggregate = function(x) sum(x<0.05)/nrep)
+}
+
+ttest_vs_dcor_comparison_admixture_Gaussian <- function( n=40, es=0.6, nrep=1000){
+  require('MASS')
+  require("reshape2")
+  res=c()
+  for(nv in c(seq(from=1, to=20, by=4), 100)){
+    for(r in 1:nrep){
+      data = mvrnorm(n=n, 
+                     mu=c(0, 0), 
+                     Sigma=matrix(c(1, es, es, 1), nrow=2))
+      y=data[,1]
+      rd = dist(y)
+      x1 = data[,2]
+      aux <- cbind(x1, replicate(n = nv, rnorm(n)))
+      x=rotateEqualN(aux)
+      min.q = min(p.adjust(apply(x, 2, function(a) cor.test(a, y)$p.value), method="fdr"))
+      dcor.p = dcor.ttest(dist(x), rd, distance = T)$p.value
+      res = rbind(res, c(nv, r, min.q, dcor.p))
+    }
+  }
+  res = data.frame(res)
+  
+  colnames(res) = c("nVariables", "replicate", "min.q", "dcor.p")
+  res2 = melt(res, id=list("nVariables", "replicate"))
+  res3 = dcast(res2, nVariables ~ variable, value.var="value", fun.aggregate = function(x) sum(x<0.05)/nrep)
+}
+```
+
+```{r}
+cl<-makeCluster(6)
+
+```
+
+# Univariate versus Dcor analysis with effect spread.
+
+```{r}
+res_mixture <- lapply(seq(from=0,to=.8,by = 0.1), function(x) ttest_vs_dcor_comparison_admixture(es = x))
+
+
+
+for(ii in 1:length(res_mixture)){
+p <- ggplot(melt(res_mixture[[ii]], id=list("nVariables")), aes(x=nVariables, y=value))+
+  geom_point(aes(color=variable), size=4)+labs(title = " Univariate test minimum Q-value against DCor P-Value \n with effect spread over the pathway\n",
+  x="Pathway Size")+ scale_color_manual(labels = c("Univariate \n Q-value", "DCor \n P-Value"), values = c("blue", "red"))+
+  geom_line(aes(color=variable, group=variable))+ 
+  theme_minimal() + ylim(0,0.99)+
+    theme(axis.text.x = element_text(size = 14), axis.title.x = element_text(size = 16),
+          axis.text.y = element_text(size = 14), axis.title.y = element_text(size = 16),
+          plot.title = element_text(size = 14, face = "bold", color = "black", hjust = 0.5)
+          )
+print(p)
+}
+```
+
+
+```{r}
+res_mixture <- lapply(seq(from=0,to=.8,by = 0.1), function(x) ttest_vs_dcor_comparison_admixture(es = x))
+
+
+
+for(ii in 1:length(res_mixture)){
+melted_data <- melt(res_mixture[[ii]], id=list("nVariables"))
+melted_data$logvalue <- log(melted_data$value)
+melted_data$lognVariables <- log(melted_data$nVariables)
+
+p <- ggplot(melted_data, aes(x=lognVariables, y=(logvalue)))+
+  geom_point(aes(color=variable), size=4)+labs(title = " Univariate test minimum Q-value against DCor P-Value \n with effect spread over the pathway\n",
+  x="Pathway Size")+ scale_color_manual(labels = c("Univariate \n Q-value", "DCor \n P-Value"), values = c("blue", "red"))+
+  geom_line(aes(color=variable, group=variable))+ 
+  theme_minimal() + 
+    theme(axis.text.x = element_text(size = 14), axis.title.x = element_text(size = 16),
+          axis.text.y = element_text(size = 14), axis.title.y = element_text(size = 16),
+          plot.title = element_text(size = 14, face = "bold", color = "black", hjust = 0.5)
+          )
+print(p)
+}
+```
+
+```{r}
+boo <- nls(log(value) ~ a*log(nVariables)+b, data = melted_data[melted_data$variable=="dcor.p",], start = list( a=-1, b=0) )
+summary(boo)
+```
+
+
+
+# Univariate versus Dcor analysis with effect confined to a gene.
+
+```{r}
+res_no_mixture <- lapply(seq(from=0,to=.8,by = 0.1), function(x) ttest_vs_dcor_comparison_no_admixture(es = x))
+
+
+library(ggplot2)
+
+for(ii in 1:length(res_no_mixture)){
+  p <- ggplot(melt(res_no_mixture[[ii]], id=list("nVariables")), aes(x=nVariables, y=value))+
+    geom_point(aes(color=variable), size=4)+labs(title = " Univariate test minimum Q-value against DCor P-Value \n with effect Confined to a single gene in the pathway\n",
+                                                 x="Pathway Size")+ scale_color_manual(labels = c("Univariate \n Q-value", "DCor \n P-Value"), values = c("blue", "red"))+
+    geom_line(aes(color=variable, group=variable))+ 
+    theme_minimal() + ylim(0,0.99)+
+    theme(axis.text.x = element_text(size = 14), axis.title.x = element_text(size = 16),
+          axis.text.y = element_text(size = 14), axis.title.y = element_text(size = 16),
+          plot.title = element_text(size = 14, face = "bold", color = "black", hjust = 0.5)
+    )
+  print(p)
+}
+```
+
+# Univariate versus Dcor analysis with effect sprread over the pathway, non dichotomic case.
+
+
+```{r}
+# res_mixture_Gaussian <- lapply(seq(from=0,to=.8,by = 0.1), function(x) ttest_vs_dcor_comparison_admixture_Gaussian(es = x))
+# 
+# 
+# library(ggplot2)
+# 
+# for(ii in 1:length(res_mixture_Gaussian)){
+#   p <- ggplot(melt(res_mixture_Gaussian[[ii]], id=list("nVariables")), aes(x=nVariables, y=value))+
+#     geom_point(aes(color=variable), size=4)+labs(title = " Univariate test minimum Q-value against DCor P-Value \n with effect spread over the pathway\n non-binary case",
+#                                                  x="Pathway Size")+ scale_color_manual(labels = c("Univariate \n Q-value", "DCor \n P-Value"), values = c("blue", "red"))+
+#     geom_line(aes(color=variable, group=variable))+ 
+#     theme_minimal() + ylim(0,0.99)+
+#     theme(axis.text.x = element_text(size = 14), axis.title.x = element_text(size = 16),
+#           axis.text.y = element_text(size = 14), axis.title.y = element_text(size = 16),
+#           plot.title = element_text(size = 14, face = "bold", color = "black", hjust = 0.5)
+#     )
+#   print(p)
+# }
+```
+
