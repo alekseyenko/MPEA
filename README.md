@@ -25,3 +25,5 @@ Arguments:
 7. ncore: number of CPU cores used for the computation
 8. dcor_test_repetition: Passed as R ( repitition count to dcor.test)
 6. sim_mode: the flag choosing between average ( "mean") and maximum ("max") dcor values for significance analysis.
+Value:
+A vector containing the unadjusted p-value of individual pathways submitted to the code.
