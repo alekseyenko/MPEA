@@ -30,3 +30,4 @@ A list containnig:
 1. pathway_dcor: Pathway distance correlation.
 2. pathway_dcor_test: The result of energy::dcor.test on the pathway
 3.simulated_p_value: The estimated p_value of individual pathways.
+=======
