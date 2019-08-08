@@ -53,7 +53,7 @@ MPEA_subsampling= function(expressions,y,
                              subsampling_size=10,
                              numsim1 = 1000,
                              numsim2 = 10000-1,
-                             parallel_cores= detectCores()-2,
+                             ncore= detectCores()-2,
                            dcor_test_repetition=1000,
                              sim_mode = c("mean")){
   
@@ -89,7 +89,7 @@ MPEA_subsampling= function(expressions,y,
   
   
   
-  cl<-makeCluster(parallel_cores)
+  cl<-makeCluster(ncore)
   registerDoParallel(cl)
   background_dcor_sim <- foreach (ii = 1:numsim2, .combine = c, .export = c("L", "pathway", "expressions","subsampling_size","y","sim_mode"), .packages = "energy" ) %dopar% {
     # print(ii)
