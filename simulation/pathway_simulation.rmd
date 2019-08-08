@@ -1,0 +1,186 @@
+---
+title: "Pathway Simulation for different Variables and Maximum selection"
+author: "Ali Shojaee Bakhtiari"
+date: "December 13, 2018"
+output: html_document
+---
+# Load libraries
+```{r}
+library(energy)
+packageVersion("energy")
+
+library(parallel)
+library(ggplot2)
+```
+
+# Simulation Function
+
+The test values are function set values, unless individually changed.
+
+```{r}
+pathway_simulation= function(nsamples = 40,
+                             y = ifelse(1:nsamples> nsamples/2,1,0),
+                             test = sum(y==1),
+                             control= sum(y==0),
+                             L=10000,
+                             p=100,
+                             q=L-p,
+                             enrichment_percentage_pathway = 0.1,
+                             k = round(p*enrichment_percentage_pathway),
+                             enrichment_percentage_background = 0.01,
+                             l = round(q*enrichment_percentage_background),
+                             ESpathway = 5,
+                             ESbackground = 1,
+                             expressions = matrix(rnorm(n= nsamples * L) , nrow = nsamples),
+                             SPZ=10,
+                             numsim1 = 1000,
+                             numsim2 = 10000-1, parallel_cores= detectCores()-2,
+                             sim_mode = c("max")){
+
+library(energy)
+# library(parallel)
+library(doParallel)
+library(ggplot2)
+packageVersion("energy")
+
+# The following script checks for the validity of the simulation histogram. "1-prod((90:80)/(100:90))" for spz and l=10
+#mean(sapply(1:1000,function(x) sum(sample(1:100,10)%in%(1:10))!=0))
+
+
+## Set  ESpathway,ESbackground,p,q, L=p+q, k,l and SPZ, numsim1 ( kinda tricky), numsim2 
+
+## 1) Set matrix for nsamples and L= p+q expressions
+
+# nsamples <- 40
+# y <- ifelse(1:nsamples> nsamples/2,1,0)
+# test <- sum(y==1)
+# control= sum(y==0)
+# dy <- dist(y)
+# L=10000
+# p=100
+# q=L-p
+# enrichment_percentage_pathway <- 0.1
+# k <- round(p*enrichment_percentage_pathway)
+# enrichment_percentage_background <- 0.01
+# l <- round(q*enrichment_percentage_background)
+# ESpathway <- 5
+# ESbackground <- 1
+# expressions <- matrix(rnorm(n= nsamples * L) , nrow = nsamples)
+# SPZ=10
+# numsim1 <- 1000
+# numsim2 <- 10000-1
+
+
+
+##  Set up your pathway of size p with k ( variable) enirched genes and ES1
+
+expressions[y==1,1:k] <- matrix(rnorm(n = test* k,mean = ESpathway), nrow = test)
+
+##  p+1 to L=p+q choose l ( lower) and apply ES2.
+expressions[y==1,(p+1):(p+l)] <- matrix(rnorm(n = test* l,mean = ESbackground), nrow = test)
+
+
+# Actual pathway dcor must be lower than maximum dcor below (dilution)
+print( paste("Actual Pathway Dcor = ", dcor(expressions[,1:p],y)))
+# Actual maximum dcor has all the enriched
+print(paste("Dcor of enriched genes within the pathway = ", dcor(expressions[,1:SPZ],y)))
+
+
+
+## 5) on 2, 
+#     5.1) choose spz numsim1 times
+#     calculate dcor_max over numsim times
+
+pathway_dcor_sim <- NULL
+for (ii in 1:numsim1){
+    pathway_dcor_sim[ii] <-  dcor(expressions[,sample(1:p, size = SPZ)],y)
+}
+# pathway_dcor_sim_df<- data.frame(pathway_dcor_sim= pathway_dcor_sim)
+# plt <- ggplot(pathway_dcor_sim_df, aes(x=pathway_dcor_sim)) + geom_histogram(binwidth=.05, color="red")+theme_bw()
+# print(plt)
+pathway_dcor_sim_output <- ifelse(sim_mode=="max",max(pathway_dcor_sim),mean(pathway_dcor_sim))
+pathway_dcor_sim_output
+
+## 6) on 4, 
+#     6.1) for ii in 1:numsim2
+
+#         6.1.1) choose spz numsim1 times
+#         calculate dcor_max(jj) over numsim1 times
+# calculate the dcor_max over siulaitons
+
+## Non-parallel
+
+# background_dcor_sim <- NULL
+# 
+# for (ii in 1:numsim2){
+#   print(ii)
+#   aux_pathway <- sample(1:L, p) # generate an aux pathway the same size as the actual pathway
+#   aux_dcor <- NULL
+#   for (jj in 1: numsim1){
+#     aux_dcor[jj] <-  dcor(expressions[,sample(aux_pathway, size = SPZ)],y)
+#   }
+#   background_dcor_sim[ii] <- max(aux_dcor)
+#   
+# }
+
+
+cl<-makeCluster(parallel_cores)
+registerDoParallel(cl)
+background_dcor_sim <- foreach (ii = 1:numsim2, .combine = c, .export = c("L", "p", "expressions","SPZ","y","sim_mode"), .packages = "energy" ) %dopar% {
+  # print(ii)
+  aux_pathway <- sample(1:L, p) # generate an aux pathway the same size as the actual pathway
+  aux_dcor <- NULL
+  for (jj in 1: numsim1){
+    aux_dcor[jj] <-  dcor(expressions[,sample(aux_pathway, size = SPZ)],y)
+  }
+  ifelse(sim_mode=="max", max(aux_dcor), mean(aux_dcor))
+  
+}
+stopCluster(cl)
+
+
+
+##mean(sapply(1:1000,function(x) sum(sample(1:10000,10)%in%(1:10))!=0))
+# background_dcor_sim_df<- data.frame(background_dcor_sim= background_dcor_sim)
+# plt <- ggplot(background_dcor_sim_df, aes(x=background_dcor_sim)) + geom_histogram(binwidth=.05, color="red")+theme_bw()
+# print(plt)
+
+sim_df <- data.frame(simulation= c(background_dcor_sim,pathway_dcor_sim), type=c(rep("Background", numsim2),rep("Pathway", numsim1)))
+plt <- ggplot(sim_df, aes(x=simulation, color=type, fill=type)) + geom_histogram(binwidth=.05)+theme_bw()
+print(plt)
+
+
+## 7 calculate p-value. Re,meber to keep 1 on nominator.
+p_value <- (sum(background_dcor_sim>pathway_dcor_sim_output)+1)/(numsim2+1)
+return(p_value)
+}
+```
+
+# Analyzing the effect of Effect size on the simulation
+In this test we alter the effect size of the phenotype on the pathway genes from a minimum equal to the random effect to the background to the maximum of choice
+
+```{r}
+p_value_variable_effect <- sapply(X = 1:5,  function(x) pathway_simulation(ESpathway = x, numsim1 = 100, numsim2 = 999))
+print(p_value_variable_effect)
+```
+# Analyzing the effect of Effect size on the simulation
+In this test we alter the effect size of the phenotype on the pathway genes from a minimum equal to the random effect to the background to the maximum of choice. However, we also increase the effect of the phenotype o the background. The purpose of this test is to test the model when the effect size increases but it also affects the background. 
+```{r}
+p_value_variable_effect_and_background <- sapply(X = 1:5,  function(x) pathway_simulation(ESpathway = x, ESbackground = x/5, numsim1 = 100, numsim2 = 999))
+print(p_value_variable_effect_and_background)
+```
+
+# Analyzing the effect of pathway size on the simulation
+In this test we alter the size of the pathway and see the effect on the pathway simulation. 
+
+```{r}
+ p_value_variable_pathway_size <- sapply(X = seq(50,300,50),  function(x) pathway_simulation(ESpathway = 3, p = x, numsim1 = 100, numsim2 = 999))
+```
+
+# Analyzing the effect of surrogate pathway size ()
+In this test we alter the size of the pathway surrogate size and see the effect on the pathway simulation.
+
+```{r}
+ p_value_variable_pathway_size <- sapply(X = c(1,seq(5,20,5)),  function(x) pathway_simulation(ESpathway = 3, SPZ = x, numsim1 = 100, numsim2 = 999))
+```
+

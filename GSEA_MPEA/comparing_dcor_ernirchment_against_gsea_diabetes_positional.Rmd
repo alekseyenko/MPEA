@@ -1,0 +1,296 @@
+---
+title: "Comparing MPEA against GSEA diabetes dataset"
+author: "Ali Shojaee Bakhtiari"
+date: "November 16, 2018"
+output: html_document
+---
+
+## Loading Library
+```{r}
+library(knitr)
+packageVersion("knitr")
+library(energy)
+packageVersion("energy")
+
+library(broom)
+packageVersion("broom")
+library(plyr)
+packageVersion("plyr")
+
+library(kableExtra)
+packageVersion("kableExtra")
+
+library(foreach)
+packageVersion("foreach")
+
+library(doParallel)
+packageVersion("doParallel")
+
+set.seed(0)
+```
+## Loading the results of running GSEA on diabetes dataset
+
+GSEA was separately run and the enrichment results are saved. We upload the results and select the significant findings. 
+
+```{r}
+gsea_results <- read.csv("./GSEA diabetes/gsea_diabetes_enrichment_results_v6.2_positional.csv", sep = ",", row.names = 1)
+rownames(gsea_results) <- tolower(rownames(gsea_results))
+gsea_results_significant <- subset(gsea_results, NOM.p.val <0.05 )
+```
+
+
+## Loading the expressions and pathway sets of diabetes databse
+
+We use the colapsed symbols to genes expression data for expressions. GSEA uses a chip functoin for connecting the uncollapsed to collapsed data. I am currently figuring out how ti perfprms that step. For now not collapsing serves the purpose.
+Genotypes are 33 mutants and 17 wild types.
+Pathways are read as done is GSEA.
+To remain consistent with GSEA we remove the pathways with sizes below 15 and above 500 as well as pathways that have less than 15 genes present in inside the expression matrix.
+
+```{r}
+expressions <- read.csv("./GSEA diabetes/Diabetes_collapsed_symbols_R.csv", sep = ",", row.names = 1)
+genotypes <- read.csv("./GSEA diabetes/Diabetes_genotype.txt", sep=" ", header = F)
+genotypes <- as.vector(unname(ifelse( genotypes==1,1,0)))
+gene_names <- rownames(expressions)
+expressions <- expressions[-1]
+expressions <- t(expressions)
+dim(expressions)
+pathway <- read.csv("./msigdb_v6.2_files_to_download_locally/msigdb_v6.2_GMTs_R/positional gene sets/c1.all.v6.2.symbols.csv", sep = ",", row.names = 1,na.strings = "", colClasses="character")
+pathway <- pathway[,-1]
+pathway <- t(pathway)
+row.names(pathway) <- NULL
+pathway <- as.data.frame(pathway)
+pathway=lapply(pathway, function(x) x[!is.na(x)] )
+pathway=lapply(pathway, function(x) as.character(x))
+# pathway_collapsed <- pathway[sapply(pathway,function(x) {(15 <= length(x)) &&(length(x) <= 500)&& sum(colnames(expressions)%in%x)>15})]
+
+pathway_collapsed <- pathway[names(pathway) %in% rownames(gsea_results)]
+
+min(sapply(pathway_collapsed,length))
+individual_pathway_length <- sapply(pathway_collapsed,length)
+gene_number <- length(gene_names)
+pathway_number <- length(individual_pathway_length)
+pathway_number
+```
+
+
+
+
+
+## Running Dcor and Univariate ttest over the pathways
+
+Expressions concordant with specific pathways are chosen and dcor and univariate t.test are applied on them. The univariate test is adjusted for FDR correction.
+
+```{r}
+dcor_results <- list()
+univariate_results <- list()
+univariate_results_adjusted <- list()
+
+for (ii in 1:length(pathway_collapsed)){
+pathway_expressions <- expressions[,colnames(expressions)%in% pathway_collapsed[[ii]]]
+
+ dcor_results[ii] <- dcor((pathway_expressions),(genotypes))
+
+}
+names(dcor_results)  <- names( pathway_collapsed)
+```
+
+
+## Simulating MPEA Surrogate over the array.
+
+
+```{r}
+set.seed(0)
+# surrogate_dcor <- list()
+num_simulation <- 9999
+cl<-makeCluster(6)
+registerDoParallel(cl)
+
+surrogate_dcor <- foreach (ii = 1:pathway_number,  .export = c("num_simulation","gene_number","individual_pathway_length","genotypes"), .packages = "energy") %dopar%{
+  if(ii%%100==0) print(ii)
+  aux_dcor <- NULL
+    for ( jj in 1: num_simulation)
+    {
+      aux_genes <- sample(1:gene_number,individual_pathway_length[ii])
+      aux_dcor[jj] <- dcor(expressions[,aux_genes],genotypes)
+    
+    }  
+  # surrogate_dcor[[ii]] <- aux_dcor
+  aux_dcor
+}
+stopCluster(cl)
+save.image(file = "diabetes_positional.Rdata")
+
+```
+
+```{r}
+nominal_dcor_pvalues <- sapply(1:pathway_number, function(x) (1+(sum(surrogate_dcor[[x]]>dcor_results[x])))/(1+num_simulation))
+names(nominal_dcor_pvalues) <- names( pathway_collapsed)
+head(sort(nominal_dcor_pvalues),10)
+dcor_significant_pathways_p.value <- sort(nominal_dcor_pvalues[nominal_dcor_pvalues <0.05])
+nominal_dcor_q_values <- p.adjust(nominal_dcor_pvalues , method = "fdr")
+# nominal_dcor_q_values
+nominal_dcor_q_values_under_25 <- sort(nominal_dcor_q_values[nominal_dcor_q_values<0.25])
+nominal_dcor_q_values_under_25
+```
+
+
+## Identifying the pathways deemed significant in both GSEA and MPEA
+
+```{r}
+Mutually_identified_in_GSEA_dcor <- intersect(names(dcor_significant_pathways_p.value), rownames(gsea_results_significant))
+
+Mutually_identified_in_GSEA_dcor
+```
+
+## Identifying the pathways significant in MPEA not in GSEA
+
+```{r}
+Significant_in_dcor_not_in_GSEA <- setdiff(names(dcor_significant_pathways_p.value),Mutually_identified_in_GSEA_dcor)
+pvalue_of_disparities <- rbind(dcor_significant_pathways_p.value[Significant_in_dcor_not_in_GSEA],gsea_results[Significant_in_dcor_not_in_GSEA,]$NOM.p.val)
+rownames(pvalue_of_disparities) <- c("MPEA","GSEA")
+pvalue_of_disparities%>%
+  kable("html", digits = 4, longtable = TRUE) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 12, full_width = F) %>%
+  row_spec(0, angle = -0)
+```
+
+## Identifying the pathways significant in GSEA not in MPEA
+
+```{r}
+Significant_in_GSEA_not_in_dcor <- setdiff(rownames(gsea_results_significant),Mutually_identified_in_GSEA_dcor)
+pvalue_of_disparities <- rbind(nominal_dcor_pvalues[Significant_in_GSEA_not_in_dcor],gsea_results[Significant_in_GSEA_not_in_dcor,]$NOM.p.val)
+rownames(pvalue_of_disparities) <- c("MPEA","GSEA")
+pvalue_of_disparities %>%
+  kable("html", digits = 4, longtable = TRUE) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 12, full_width = F) %>%
+  row_spec(0, angle = -0)
+
+```
+
+## Univariate Significance analysis on single pathway gene by gene Significant in MPEA and not in GSEA
+```{r}
+enrichment_ratio_dcor <- NULL
+enrichment_ratio_ttest <- NULL
+for ( ii in 1:length(Significant_in_dcor_not_in_GSEA) ){
+aux_genes <- intersect(pathway_collapsed[[Significant_in_dcor_not_in_GSEA[[ii]]]],colnames(expressions))
+aux_pathway_dcor <- dcor.test(dist(expressions[,aux_genes]),dist(genotypes),R=10000)
+aux_individual_genes_in_pathway_dcor <- sapply(aux_genes,function(x) dcor.test(dist(expressions[,x]),dist(genotypes),R=10000)$p.value<0.05 )
+aux_enrichment_ratio_dcor <- sum(aux_individual_genes_in_pathway_dcor)/length(aux_individual_genes_in_pathway_dcor)
+enrichment_ratio_dcor[ii] <- aux_enrichment_ratio_dcor
+
+aux_individual_genes_in_pathway_ttest <- sapply(aux_genes,function(x) t.test(expressions[,x]~genotypes)$p.value<0.05 )
+aux_enrichment_ratio_ttest <- sum(aux_individual_genes_in_pathway_ttest)/length(aux_individual_genes_in_pathway_ttest)
+aux_enrichment_ratio_ttest
+enrichment_ratio_ttest[ii] <-aux_enrichment_ratio_ttest
+}
+
+enrichment_ratio_comparison <- rbind(enrichment_ratio_dcor,enrichment_ratio_ttest)
+rownames(enrichment_ratio_comparison) <- c("MPEA","GSEA")
+colnames(enrichment_ratio_comparison) <- Significant_in_dcor_not_in_GSEA
+
+enrichment_ratio_comparison%>%
+  kable("html", digits = 4, longtable = TRUE) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 12, full_width = F) %>%
+  row_spec(0, angle = -0)
+t.test(enrichment_ratio_dcor,enrichment_ratio_ttest)
+enrichment_ratios_percenages <- rbind(sum(enrichment_ratio_dcor>enrichment_ratio_ttest)/length(enrichment_ratio_dcor),
+sum(enrichment_ratio_dcor<enrichment_ratio_ttest)/length(enrichment_ratio_dcor),
+sum(enrichment_ratio_dcor==enrichment_ratio_ttest)/length(enrichment_ratio_dcor))*100
+rownames(enrichment_ratios_percenages) <- c ( "More univariate enrichment detected in Dcor", "More univariate enrichment detected in T-test", "Draw" )
+colnames(enrichment_ratios_percenages) <- "Percentage"
+
+enrichment_ratios_percenages%>%
+  kable("html", digits = 4, longtable = TRUE) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 12, full_width = F) %>%
+  row_spec(0, angle = -0)
+
+```
+
+## Univariate Significance analysis on single pathway gene by gene Significant in GSEA and not in MPEA
+```{r}
+enrichment_ratio_dcor <- NULL
+enrichment_ratio_ttest <- NULL
+for ( ii in 1:length(Significant_in_GSEA_not_in_dcor) ){
+aux_genes <- intersect(pathway_collapsed[[Significant_in_GSEA_not_in_dcor[[ii]]]],colnames(expressions))
+if ( identical(aux_genes, character(0))) next
+aux_pathway_dcor <- dcor.test(dist(expressions[,aux_genes]),dist(genotypes),R=10000)
+aux_individual_genes_in_pathway_dcor <- sapply(aux_genes,function(x) dcor.test(dist(expressions[,x]),dist(genotypes),R=10000)$p.value<0.05 )
+aux_enrichment_ratio_dcor <- sum(aux_individual_genes_in_pathway_dcor)/length(aux_individual_genes_in_pathway_dcor)
+enrichment_ratio_dcor[ii] <- aux_enrichment_ratio_dcor
+
+aux_individual_genes_in_pathway_ttest <- sapply(aux_genes,function(x) t.test(expressions[,x]~genotypes)$p.value<0.05 )
+aux_enrichment_ratio_ttest <- sum(aux_individual_genes_in_pathway_ttest)/length(aux_individual_genes_in_pathway_ttest)
+aux_enrichment_ratio_ttest
+enrichment_ratio_ttest[ii] <-aux_enrichment_ratio_ttest
+}
+
+
+enrichment_ratio_comparison <- rbind(enrichment_ratio_dcor,enrichment_ratio_ttest)
+rownames(enrichment_ratio_comparison) <- c("MPEA","GSEA")
+colnames(enrichment_ratio_comparison) <- Significant_in_GSEA_not_in_dcor
+
+enrichment_ratio_comparison%>%
+  kable("html", digits = 4, longtable = TRUE) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 12, full_width = F) %>%
+  row_spec(0, angle = -0)
+t.test(enrichment_ratio_dcor,enrichment_ratio_ttest)
+enrichment_ratios_percenages <- rbind(sum(enrichment_ratio_dcor>enrichment_ratio_ttest,na.rm = T)/length(enrichment_ratio_dcor),
+sum(enrichment_ratio_dcor<enrichment_ratio_ttest,na.rm = T)/length(enrichment_ratio_dcor),
+sum(enrichment_ratio_dcor==enrichment_ratio_ttest,na.rm = T)/length(enrichment_ratio_dcor))*100
+rownames(enrichment_ratios_percenages) <- c ( "More univariate enrichment detected in Dcor", "More univariate enrichment detected in T-test", "Draw" )
+colnames(enrichment_ratios_percenages) <- "Percentage"
+
+enrichment_ratios_percenages%>%
+  kable("html", digits = 4, longtable = TRUE) %>%
+  kable_styling(bootstrap_options = "striped", font_size = 12, full_width = F) %>%
+  row_spec(0, angle = -0)
+
+```
+# Close cluster
+```{r}
+# stopCluster(cl)
+
+```
+
+# PCA plot of pathways deemed significant in MPEA but not GSEA
+
+```{r}
+library(ggfortify)
+for (name in (sort(Significant_in_dcor_not_in_GSEA, decreasing = F))){
+strongestpathwaydcor <- unname(unlist(pathway_collapsed[name]))
+expressions_pathway <- as.data.frame(expressions[,which(colnames(expressions)%in% strongestpathwaydcor)])
+genotypes_category <- ifelse(genotypes==1, "MUT", "WT")
+genotypes_category <- as.data.frame(genotypes_category)
+print(name)
+print(autoplot(prcomp(expressions_pathway), data = genotypes_category, colour='genotypes_category' )+theme_bw()+ggtitle(label = "name")) 
+
+# pcoa.obj <- pcoa(D = dist(expressions_pathway), correction="none", rn=NULL)
+# biplot.pcoa(pcoa.obj)
+}
+
+
+
+```
+
+# PCA plot of pathways deemed significant in GSEA but not MPEA
+
+
+```{r}
+rownames(gsea_results_significant)
+for (name in (Significant_in_GSEA_not_in_dcor)){
+  strongestpathwaydcor <- unname(unlist(pathway_collapsed[name]))
+  expressions_pathway <- as.data.frame(expressions[,which(colnames(expressions)%in% strongestpathwaydcor)])
+  genotypes_category <- ifelse(genotypes==1, "MUT", "WT")
+  genotypes_category <- as.data.frame(genotypes_category)
+  print(name)
+  print(autoplot(prcomp(expressions_pathway), data = genotypes_category, colour='genotypes_category' )+theme_bw()+ggtitle(label = "name")) 
+  
+  # pcoa.obj <- pcoa(D = dist(expressions_pathway), correction="none", rn=NULL)
+  # biplot.pcoa(pcoa.obj)
+}
+```
+
+
+
+
+
